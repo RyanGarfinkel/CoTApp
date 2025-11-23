@@ -12,7 +12,7 @@ from google import genai
 from google.genai import types
 
 # ------------------- CONFIGURATION --------------
-GEMINI_API_KEY = "AIzaSyAinxB3ELOTtspOrgVbdZqi8AWclYZRAoU"  # Personal API Key
+GEMINI_API_KEY = "AIzXXXXXXXXXX"  # Personal API Key blurred out
 SAMPLE_SIZE = 50  # Number of problems to test (per project spec)
 MODEL = "gemini-2.0-flash"  # Fast & efficient, or use "gemini-1.5-pro" for better accuracy
 RANDOM_SEED = 42  # For reproducibility
