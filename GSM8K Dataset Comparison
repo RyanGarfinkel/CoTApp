@@ -152,7 +152,7 @@ def run_comparison():
         if standard_is_correct:
             standard_correct += 1
         
-        print(f"  Standard Answer: {standard_answer} ({'✓' if standard_is_correct else '✗'})")
+        print(f"  Standard Answer: {standard_answer} ({'correct' if standard_is_correct else 'wrong'})")
         
         # Small delay to avoid rate limits
         time.sleep(2)
