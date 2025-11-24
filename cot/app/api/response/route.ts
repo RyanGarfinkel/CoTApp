@@ -24,8 +24,6 @@ export async function POST(request: NextRequest) {
 
                 let standardResponse = '';
                 let cotResponse = '';
-                let standardDone = false;
-                let cotDone = false;
 
                 const sendUpdate = () => {
                     controller.enqueue(encoder.encode(JSON.stringify({ 
@@ -40,13 +38,11 @@ export async function POST(request: NextRequest) {
                     model.generateContentStream(cotPrompt)
                 ]);
 
-                // Process streams independently
                 const processStandard = (async () => {
                     for await (const chunk of standardResult.stream) {
                         standardResponse += chunk.text();
                         sendUpdate();
                     }
-                    standardDone = true;
                 })();
 
                 const processCot = (async () => {
@@ -54,7 +50,6 @@ export async function POST(request: NextRequest) {
                         cotResponse += chunk.text();
                         sendUpdate();
                     }
-                    cotDone = true;
                 })();
 
                 await Promise.all([processStandard, processCot]);
