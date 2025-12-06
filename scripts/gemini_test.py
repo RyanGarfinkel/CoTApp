@@ -8,14 +8,18 @@ import random
 import time
 from datetime import datetime
 from datasets import load_dataset
-from openai import OpenAI
+from google import genai
+from google.genai import types
+from dotenv import load_dotenv
+import os
 
 # ------------------- CONFIGURATION --------------
-OPENAI_API_KEY = ""  # Personal API Key blurred out
-SAMPLE_SIZE = 50  # Number of problems to test (per project spec)
-MODEL = "gpt-3.5-turbo"  # Fast & efficient
-RANDOM_SEED = 42  # For reproducibility
-OUTPUT_FILE = "gsm8k_comparison_results.json"
+load_dotenv()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+SAMPLE_SIZE = 50
+MODEL = "gemini-2.0-flash"
+RANDOM_SEED = 42
+OUTPUT_FILE = "gemini_results.json"
 
 # ------------------------- PROMPTS ----------------------
 STANDARD_PROMPT = """Solve this math problem.
@@ -88,17 +92,19 @@ def normalize_answer(answer):
     except:
         return answer
 
-def call_openai(client, prompt, max_retries=3):
-    """Call OpenAI API with retry logic for rate limits."""
+def call_gemini(client, prompt, max_retries=3):
+    """Call Gemini API with retry logic for rate limits."""
     for attempt in range(max_retries):
         try:
-            response = client.chat.completions.create(
+            response = client.models.generate_content(
                 model=MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=500,
-                temperature=0  # Deterministic for reproducibility
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    max_output_tokens=500,
+                    temperature=0
+                )
             )
-            return response.choices[0].message.content
+            return response.text
         except Exception as e:
             error_str = str(e).lower()
             if ("rate" in error_str or "quota" in error_str) and attempt < max_retries - 1:
@@ -113,10 +119,10 @@ def call_openai(client, prompt, max_retries=3):
 # ----------------------- MAIN COMPARISON FUNCTION -----------------------
 def run_comparison():
     print("GSM8K Dataset Comparison: Standard vs CoT Prompting")
-    print("Using OpenAI API")
+    print("Using Google Gemini API")
     
-    # Initialize OpenAI client
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    # Initialize Gemini client
+    client = genai.Client(api_key=GEMINI_API_KEY)
     
     # Load GSM8K dataset
     print("\n[1/4] Loading GSM8K dataset from HuggingFace...")
@@ -146,7 +152,7 @@ def run_comparison():
         print(f"  Ground Truth: {ground_truth}")
         
         # Standard prompting
-        standard_response = call_openai(client, STANDARD_PROMPT.format(question=question))
+        standard_response = call_gemini(client, STANDARD_PROMPT.format(question=question))
         standard_answer = extract_model_answer(standard_response) if standard_response else None
         standard_normalized = normalize_answer(standard_answer)
         ground_normalized = normalize_answer(ground_truth)
@@ -161,7 +167,7 @@ def run_comparison():
         time.sleep(2)
         
         # Chain-of-Thought prompting
-        cot_response = call_openai(client, COT_PROMPT.format(question=question))
+        cot_response = call_gemini(client, COT_PROMPT.format(question=question))
         cot_answer = extract_model_answer(cot_response) if cot_response else None
         cot_normalized = normalize_answer(cot_answer)
         cot_is_correct = cot_normalized == ground_normalized
