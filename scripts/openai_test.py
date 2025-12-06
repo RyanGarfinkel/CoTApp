@@ -1,0 +1,245 @@
+#GSM8K Dataset Comparison: Standard vs Chain-of-Thought Prompting
+#Team: Chain-of-Thought
+#By: Brandon Cuevas
+
+import json
+import re
+import random
+import time
+from datetime import datetime
+from datasets import load_dataset
+from openai import OpenAI
+from dotenv import load_dotenv
+import os
+
+# ------------------- CONFIGURATION --------------
+load_dotenv()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+SAMPLE_SIZE = 50
+MODEL = "gpt-3.5-turbo"
+RANDOM_SEED = 42
+OUTPUT_FILE = "gpt_results.json"
+
+# ------------------------- PROMPTS ----------------------
+STANDARD_PROMPT = """Solve this math problem.
+Important: Give ONLY the numerical answer, with no words or explanation.
+
+Problem: {question}
+
+Final Answer:"""
+
+COT_PROMPT = """Solve this math problem step by step.
+1. Show your reasoning clearly.
+2. At the very end, output the final answer in this exact format: "Final Answer: [number]"
+
+Problem: {question}
+
+Let's go:"""
+
+# ----------------------- HELPER FUNCTIONS ------------------------
+def extract_ground_truth(answer_str):
+    """Extract the numerical answer from GSM8K's answer format.
+    GSM8K answers end with '#### <number>'
+    """
+    match = re.search(r'####\s*(-?\d+(?:,\d+)*(?:\.\d+)?)', answer_str)
+    if match:
+        return match.group(1).replace(',', '')
+    return None
+
+def extract_model_answer(response_text):
+    """Extract numerical answer from model response.
+    Prioritizes the explicit 'Final Answer:' format.
+    """
+    if not response_text:
+        return None
+        
+    text = response_text.strip()
+    
+    # Priority 1: Look for explicit "Final Answer: X" pattern we requested
+    # Matches: "Final Answer: 5", "Final Answer: $5.00", "Final Answer: 5,000"
+    explicit_pattern = r'Final Answer:\s*\$?(-?\d+(?:,\d+)*(?:\.\d+)?)'
+    match = re.search(explicit_pattern, text, re.IGNORECASE)
+    if match:
+        return match.group(1).replace(',', '')
+
+    # Priority 2: GSM8K style "#### X"
+    match = re.search(r'####\s*(-?\d+(?:,\d+)*(?:\.\d+)?)', text)
+    if match:
+        return match.group(1).replace(',', '')
+    
+    # Priority 3: "The answer is X"
+    match = re.search(r'answer\s*(?:is|:)\s*\$?(-?\d+(?:,\d+)*(?:\.\d+)?)', text, re.IGNORECASE)
+    if match:
+        return match.group(1).replace(',', '')
+    
+    # Fallback: get last number in response (Risky for CoT, but last resort)
+    numbers = re.findall(r'-?\d+(?:\.\d+)?', text)
+    if numbers:
+        return numbers[-1]
+    
+    return None
+
+def normalize_answer(answer):
+    """Normalize answer for comparison (handle floats vs ints)."""
+    if answer is None:
+        return None
+    try:
+        num = float(answer)
+        if num == int(num):
+            return str(int(num))
+        return str(num)
+    except:
+        return answer
+
+def call_openai(client, prompt, max_retries=3):
+    """Call OpenAI API with retry logic for rate limits."""
+    for attempt in range(max_retries):
+        try:
+            response = client.chat.completions.create(
+                model=MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=500,
+                temperature=0
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            error_str = str(e).lower()
+            if ("rate" in error_str or "quota" in error_str) and attempt < max_retries - 1:
+                wait_time = (attempt + 1) * 30
+                print(f"  Rate limited. Waiting {wait_time}s...")
+                time.sleep(wait_time)
+            else:
+                print(f"  API Error: {e}")
+                return None
+    return None
+
+# ----------------------- MAIN COMPARISON FUNCTION -----------------------
+def run_comparison():
+    print("GSM8K Dataset Comparison: Standard vs CoT Prompting")
+    print("Using OpenAI API")
+    
+    # Initialize OpenAI client
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    
+    # Load GSM8K dataset
+    print("\n[1/4] Loading GSM8K dataset from HuggingFace...")
+    dataset = load_dataset("openai/gsm8k", "main", split="test")
+    print(f"  Loaded {len(dataset)} test problems")
+    
+    # Sample problems
+    print(f"\n[2/4] Sampling {SAMPLE_SIZE} random problems (seed={RANDOM_SEED})...")
+    random.seed(RANDOM_SEED)
+    indices = random.sample(range(len(dataset)), SAMPLE_SIZE)
+    samples = [dataset[i] for i in indices]
+    
+    # Run comparisons
+    print(f"\n[3/4] Running comparisons on {SAMPLE_SIZE} problems...")
+    print("  This may take a while due to API rate limits.\n")
+    
+    results = []
+    standard_correct = 0
+    cot_correct = 0
+    
+    for i, sample in enumerate(samples):
+        question = sample['question']
+        ground_truth = extract_ground_truth(sample['answer'])
+        
+        print(f"Problem {i+1}/{SAMPLE_SIZE}:")
+        print(f"  Q: {question[:60]}...")
+        print(f"  Ground Truth: {ground_truth}")
+        
+        # Standard prompting
+        standard_response = call_openai(client, STANDARD_PROMPT.format(question=question))
+        standard_answer = extract_model_answer(standard_response) if standard_response else None
+        standard_normalized = normalize_answer(standard_answer)
+        ground_normalized = normalize_answer(ground_truth)
+        standard_is_correct = standard_normalized == ground_normalized
+        
+        if standard_is_correct:
+            standard_correct += 1
+        
+        print(f"  Standard Answer: {standard_answer} ({'correct' if standard_is_correct else 'wrong'})")
+        
+        # Small delay to avoid rate limits
+        time.sleep(2)
+        
+        # Chain-of-Thought prompting
+        cot_response = call_openai(client, COT_PROMPT.format(question=question))
+        cot_answer = extract_model_answer(cot_response) if cot_response else None
+        cot_normalized = normalize_answer(cot_answer)
+        cot_is_correct = cot_normalized == ground_normalized
+        
+        if cot_is_correct:
+            cot_correct += 1
+        
+        print(f"  CoT Answer: {cot_answer} ({'correct' if cot_is_correct else 'wrong'})")
+        print()
+        
+        # Store result
+        results.append({
+            "index": i,
+            "question": question,
+            "ground_truth": ground_truth,
+            "standard": {
+                "response": standard_response,
+                "extracted_answer": standard_answer,
+                "correct": standard_is_correct
+            },
+            "cot": {
+                "response": cot_response,
+                "extracted_answer": cot_answer,
+                "correct": cot_is_correct
+            }
+        })
+        
+        # Delay between problems (Gemini free tier has stricter limits)
+        time.sleep(3)
+    
+    # Calculate final statistics
+    print("\n[4/4] Producing results...")
+    
+    summary = {
+        "experiment_info": {
+            "date": datetime.now().isoformat(),
+            "model": MODEL,
+            "sample_size": SAMPLE_SIZE,
+            "random_seed": RANDOM_SEED
+        },
+        "results": {
+            "standard_prompting": {
+                "correct": standard_correct,
+                "total": SAMPLE_SIZE,
+                "accuracy": round(standard_correct / SAMPLE_SIZE * 100, 2)
+            },
+            "cot_prompting": {
+                "correct": cot_correct,
+                "total": SAMPLE_SIZE,
+                "accuracy": round(cot_correct / SAMPLE_SIZE * 100, 2)
+            },
+            "improvement": round((cot_correct - standard_correct) / SAMPLE_SIZE * 100, 2)
+        },
+        "detailed_results": results
+    }
+    
+    # Save results
+    with open(OUTPUT_FILE, 'w') as f:
+        json.dump(summary, f, indent=2)
+    
+    # Print summary
+    print("Results Summary")
+    print(f"\nModel: {MODEL}")
+    print(f"Sample Size: {SAMPLE_SIZE} problems")
+    print(f"\nStandard Prompting:")
+    print(f"  Correct: {standard_correct}/{SAMPLE_SIZE}")
+    print(f"  Accuracy: {summary['results']['standard_prompting']['accuracy']}%")
+    print(f"\nChain-of-Thought Prompting:")
+    print(f"  Correct: {cot_correct}/{SAMPLE_SIZE}")
+    print(f"  Accuracy: {summary['results']['cot_prompting']['accuracy']}%")
+    print(f"\nImprovement with CoT: {summary['results']['improvement']}%")
+    print(f"\nDetailed results saved to: {OUTPUT_FILE}")
+    
+    return summary
+
+# --------------------- RUN ------------------
+if __name__ == "__main__":
+    run_comparison()

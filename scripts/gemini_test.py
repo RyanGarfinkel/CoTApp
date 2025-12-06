@@ -10,22 +10,28 @@ from datetime import datetime
 from datasets import load_dataset
 from google import genai
 from google.genai import types
+from dotenv import load_dotenv
+import os
 
 # ------------------- CONFIGURATION --------------
-GEMINI_API_KEY = "AIzXXXXXXXXXX"  # Personal API Key blurred out
-SAMPLE_SIZE = 50  # Number of problems to test (per project spec)
-MODEL = "gemini-2.0-flash"  # Fast & efficient, or use "gemini-1.5-pro" for better accuracy
-RANDOM_SEED = 42  # For reproducibility
-OUTPUT_FILE = "gsm8k_comparison_results.json"
+load_dotenv()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+SAMPLE_SIZE = 50
+MODEL = "gemini-2.0-flash"
+RANDOM_SEED = 42
+OUTPUT_FILE = "gemini_results.json"
 
 # ------------------------- PROMPTS ----------------------
-STANDARD_PROMPT = """Solve this math problem and give only the final numerical answer.
+STANDARD_PROMPT = """Solve this math problem.
+Important: Give ONLY the numerical answer, with no words or explanation.
 
 Problem: {question}
 
-Answer:"""
+Final Answer:"""
 
-COT_PROMPT = """Solve this math problem step by step. Show your reasoning for each step, then give the final answer.
+COT_PROMPT = """Solve this math problem step by step.
+1. Show your reasoning clearly.
+2. At the very end, output the final answer in this exact format: "Final Answer: [number]"
 
 Problem: {question}
 
@@ -43,28 +49,31 @@ def extract_ground_truth(answer_str):
 
 def extract_model_answer(response_text):
     """Extract numerical answer from model response.
-    Tries multiple patterns to find the final answer.
+    Prioritizes the explicit 'Final Answer:' format.
     """
     if not response_text:
         return None
         
     text = response_text.strip()
     
-    # Pattern 1: Look for "answer is X" or "answer: X"
-    patterns = [
-        r'(?:final\s+)?answer\s*(?:is|:)\s*\$?(-?\d+(?:,\d+)*(?:\.\d+)?)',
-        r'####\s*(-?\d+(?:,\d+)*(?:\.\d+)?)',
-        r'=\s*\$?(-?\d+(?:,\d+)*(?:\.\d+)?)\s*$',
-        r'\*\*(-?\d+(?:,\d+)*(?:\.\d+)?)\*\*',  # Markdown bold
-        r'\$?(-?\d+(?:,\d+)*(?:\.\d+)?)\s*(?:dollars?)?\s*\.?\s*$',
-    ]
+    # Priority 1: Look for explicit "Final Answer: X" pattern we requested
+    # Matches: "Final Answer: 5", "Final Answer: $5.00", "Final Answer: 5,000"
+    explicit_pattern = r'Final Answer:\s*\$?(-?\d+(?:,\d+)*(?:\.\d+)?)'
+    match = re.search(explicit_pattern, text, re.IGNORECASE)
+    if match:
+        return match.group(1).replace(',', '')
+
+    # Priority 2: GSM8K style "#### X"
+    match = re.search(r'####\s*(-?\d+(?:,\d+)*(?:\.\d+)?)', text)
+    if match:
+        return match.group(1).replace(',', '')
     
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
-        if match:
-            return match.group(1).replace(',', '')
+    # Priority 3: "The answer is X"
+    match = re.search(r'answer\s*(?:is|:)\s*\$?(-?\d+(?:,\d+)*(?:\.\d+)?)', text, re.IGNORECASE)
+    if match:
+        return match.group(1).replace(',', '')
     
-    # Fallback: get last number in response
+    # Fallback: get last number in response (Risky for CoT, but last resort)
     numbers = re.findall(r'-?\d+(?:\.\d+)?', text)
     if numbers:
         return numbers[-1]
@@ -92,7 +101,7 @@ def call_gemini(client, prompt, max_retries=3):
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     max_output_tokens=500,
-                    temperature=0  # Deterministic for reproducibility
+                    temperature=0
                 )
             )
             return response.text
